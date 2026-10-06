@@ -34,7 +34,11 @@ pub struct CreateConfigArgs {
     #[arg(short, long, default_value = "detected")]
     pub profile: String,
 
-    /// Overwrite the output file if it already exists
+    /// Add the profile to an existing configuration file instead of creating a new one
+    #[arg(short, long)]
+    pub add: bool,
+
+    /// Overwrite the output file, or with --add replace a profile of the same name
     #[arg(short, long)]
     pub force: bool,
 }
@@ -166,9 +170,10 @@ pub fn run() -> Result<()> {
         }
         
         Commands::CreateConfig(args) => {
-            if args.output.exists() && !args.force {
+            let adding = args.add && args.output.exists();
+            if args.output.exists() && !args.add && !args.force {
                 return Err(Error::Config(format!(
-                    "{} already exists. Use --force to overwrite it",
+                    "{} already exists. Use --add to add a profile to it, or --force to overwrite it",
                     args.output.display()
                 )));
             }
@@ -179,14 +184,45 @@ pub fn run() -> Result<()> {
                 return Err(Error::DisplayConfig("No connected displays found".to_string()));
             }
 
-            let config = Config {
-                default_profile: None,
-                profiles: vec![Profile::from_displays(&args.profile, &displays)],
+            let profile = Profile::from_displays(&args.profile, &displays);
+            let mut config = if adding {
+                Config::from_file(&args.output)?
+            } else {
+                Config { default_profile: None, profiles: Vec::new() }
             };
+
+            match config.profiles.iter().position(|p| p.name == args.profile) {
+                Some(_) if !args.force => {
+                    return Err(Error::Config(format!(
+                        "{} already has a profile named \"{}\". Use --force to replace it, or --profile to choose another name",
+                        args.output.display(), args.profile
+                    )));
+                }
+                Some(index) => config.profiles[index] = profile,
+                None => config.profiles.push(profile),
+            }
+
+            // Two profiles for the same monitors can't both be chosen automatically
+            let monitors = |p: &Profile| {
+                let mut hashes: Vec<Option<String>> = p.displays.iter().map(|d| d.edid_hash.clone()).collect();
+                hashes.sort();
+                hashes
+            };
+            let saved = config.profiles.iter().find(|p| p.name == args.profile).expect("profile was just added");
+            for other in config.profiles.iter().filter(|p| p.name != args.profile) {
+                if monitors(other) == monitors(saved) {
+                    eprintln!(
+                        "Warning: profile \"{}\" covers the same displays, so only one of the two will ever be chosen automatically",
+                        other.name
+                    );
+                }
+            }
+
             config.save_to_file(&args.output)?;
 
-            println!("Saved the current layout as profile \"{}\" to {}", args.profile, args.output.display());
-            for (display, detected) in config.profiles[0].displays.iter().zip(&displays) {
+            let action = if adding { "Added" } else { "Saved" };
+            println!("{} the current layout as profile \"{}\" to {}", action, args.profile, args.output.display());
+            for (display, detected) in saved.displays.iter().zip(&displays) {
                 let state = match (&display.resolution, display.position, display.enabled) {
                     (_, _, Some(false)) => "disabled".to_string(),
                     (Some(resolution), Some((x, y)), _) => format!("{} at ({}, {})", resolution, x, y),
@@ -196,7 +232,7 @@ pub fn run() -> Result<()> {
                 println!("  {} (currently on {}): {}{}", display.name, detected.output, state, primary);
             }
         }
-        
+
         Commands::Detect(args) => {
             let config = Config::from_file(&args.config)?;
             let display_manager = create_display_manager()?;
@@ -207,7 +243,17 @@ pub fn run() -> Result<()> {
                 if let Some(desc) = &profile.description {
                     println!("Description: {}", desc);
                 }
-                
+
+                let differences = profile.layout_differences(&displays);
+                if differences.is_empty() {
+                    println!("The current layout matches this profile");
+                } else {
+                    println!("The current layout differs from this profile:");
+                    for difference in &differences {
+                        println!("  - {}", difference);
+                    }
+                }
+
                 println!("\nDisplays in profile:");
                 for display_config in &profile.displays {
                     println!("- {}", display_config.name);
@@ -286,13 +332,18 @@ pub fn run() -> Result<()> {
             println!("Watching for display and configuration changes...");
             println!("Press Ctrl+C to exit");
 
-            // The connected displays, by output name and EDID hash, that a profile was last
-            // chosen for. Applying a profile makes the server send change events too; comparing
-            // against this keeps those from triggering another apply. It also catches a monitor
-            // being swapped for another one on the same port.
-            let mut applied_for: Option<Vec<(String, Option<String>)>> = None;
+            // Applies in a row that may leave the layout different from the profile before watch
+            // gives up until the displays or the configuration change. This keeps a layout the
+            // server can't reach, e.g. an unsupported scaling, from causing an endless loop.
+            const MAX_ATTEMPTS: u32 = 3;
 
-            // Apply once at startup
+            // The connected displays, by port and EDID hash, that were last checked. The port is
+            // part of this on purpose: a monitor moved to another port needs its layout again.
+            let mut checked_for: Option<Vec<(String, Option<String>)>> = None;
+            let mut attempts = 0;
+            let mut gave_up = false;
+
+            // Check the layout once at startup
             let mut displays_changed = true;
             let mut config_changed = false;
 
@@ -302,8 +353,8 @@ pub fn run() -> Result<()> {
                         Ok(new_config) => {
                             config = new_config;
                             println!("Configuration reloaded");
-                            // Re-apply even if the displays are unchanged; this also retries a failed apply
-                            applied_for = None;
+                            // Start over, which also retries a profile that failed to apply
+                            checked_for = None;
                         }
                         Err(e) => {
                             eprintln!("Error reloading configuration, keeping the previous one: {}", e);
@@ -314,33 +365,58 @@ pub fn run() -> Result<()> {
                 if displays_changed || config_changed {
                     match display_manager.get_displays() {
                         Ok(displays) => {
-                            // The port is part of this on purpose: a monitor moved to another
-                            // port needs the layout applied again on its new port
                             let connected: Vec<(String, Option<String>)> = displays.iter()
                                 .map(|d| (d.output.clone(), d.edid.as_ref().map(|e| e.hash())))
                                 .collect();
 
-                            if applied_for.as_ref() != Some(&connected) {
+                            let new_displays = checked_for.as_ref() != Some(&connected);
+                            if new_displays {
+                                attempts = 0;
+                                gave_up = false;
                                 let names: Vec<String> = displays.iter()
                                     .map(|d| format!("{} on {}", d.name, d.output))
                                     .collect();
                                 println!("Connected displays: {}", names.join(", "));
+                            }
 
-                                match config.find_matching_profile(&displays) {
-                                    Some(profile) => {
+                            // Compare the actual layout with the profile on every change, not only
+                            // when monitors come and go: after sleep a dock can bring the same
+                            // monitors back on the same ports with their layout reset
+                            match config.find_matching_profile(&displays) {
+                                Some(profile) => {
+                                    let differences = profile.layout_differences(&displays);
+                                    if differences.is_empty() {
+                                        if new_displays {
+                                            println!("Profile {} is already applied", profile.name);
+                                        }
+                                        attempts = 0;
+                                        gave_up = false;
+                                    } else if attempts < MAX_ATTEMPTS {
+                                        if !new_displays {
+                                            println!("Layout no longer matches profile {}: {}", profile.name, differences.join("; "));
+                                        }
                                         println!("Applying profile: {}", profile.name);
                                         if let Err(e) = apply_profile(&display_manager, &displays, profile) {
                                             eprintln!("Error applying configuration: {}", e);
-                                            eprintln!("Will retry when the displays or the configuration change");
                                         }
+                                        attempts += 1;
+                                    } else if !gave_up {
+                                        eprintln!(
+                                            "The layout still differs from profile {} after {} attempts: {}",
+                                            profile.name, MAX_ATTEMPTS, differences.join("; ")
+                                        );
+                                        eprintln!("Not retrying until the displays or the configuration change");
+                                        gave_up = true;
                                     }
-                                    None => println!("No matching profile found"),
                                 }
-
-                                // Remember these displays even if applying failed: retrying right away
-                                // would most likely fail the same way
-                                applied_for = Some(connected);
+                                None => {
+                                    if new_displays {
+                                        println!("No matching profile found");
+                                    }
+                                }
                             }
+
+                            checked_for = Some(connected);
                         }
                         Err(e) => {
                             eprintln!("Error getting displays: {}", e);
@@ -348,8 +424,9 @@ pub fn run() -> Result<()> {
                     }
                 }
 
-                // Wait for the next change, then keep collecting events for a moment: a hotplug or
-                // a config save produces a burst of them, and they should lead to a single apply
+                // Wait for the next change, then keep collecting events until none arrive for a
+                // second: a dock brings its monitors up one after another, and a config save or a
+                // hotplug produces a burst of events, which should all lead to a single apply
                 displays_changed = false;
                 config_changed = false;
 
@@ -364,7 +441,7 @@ pub fn run() -> Result<()> {
                             return Err(Error::PlatformSpecific("Change listeners stopped unexpectedly".to_string()));
                         }
                     }
-                    next = rx.recv_timeout(Duration::from_millis(500));
+                    next = rx.recv_timeout(Duration::from_millis(1000));
                 }
             }
         }

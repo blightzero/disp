@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-use crate::display::Display;
+use crate::display::{Display, Orientation};
 use crate::error::{Error, Result};
 
 /// Represents a display configuration
@@ -166,11 +166,11 @@ pub struct DisplayMatch<'a> {
 /// Match display configs to connected displays.
 ///
 /// Displays are identified by what they are, never by the port they're plugged into, so a
-/// config applies to its monitor on whichever port it is connected to. Each display is
-/// matched to at most one config. EDID hash matches are made before name matches, so a
-/// name-only config can't take a display that another config identifies by EDID. When
-/// several displays share an EDID hash, the one whose name equals the config name is
-/// preferred.
+/// config applies to its monitor on whichever port it is connected to. A config with an
+/// EDID hash matches only the monitor with that hash, which includes its serial number;
+/// a config without one matches by the display name from the EDID. Each display is
+/// matched to at most one config, and EDID hash matches are made first. When several
+/// displays share an EDID hash, the one whose name equals the config name is preferred.
 pub fn match_displays<'a>(configs: &'a [DisplayConfig], displays: &'a [Display]) -> Vec<DisplayMatch<'a>> {
     let mut claimed = vec![false; displays.len()];
     let mut assigned: Vec<Option<(usize, MatchKind)>> = vec![None; configs.len()];
@@ -191,9 +191,11 @@ pub fn match_displays<'a>(configs: &'a [DisplayConfig], displays: &'a [Display])
         }
     }
 
-    // Fall back to name matching for configs without an EDID match
+    // Configs without an EDID hash are matched by name instead. A config with a hash only
+    // ever matches that exact monitor: another unit of the same model, e.g. at a different
+    // dock, must not pick up its settings.
     for (config_index, config) in configs.iter().enumerate() {
-        if assigned[config_index].is_some() {
+        if config.edid_hash.is_some() {
             continue;
         }
 
@@ -253,12 +255,79 @@ impl Profile {
             displays: displays.iter().map(DisplayConfig::from_display).collect(),
         }
     }
+
+    /// Describe how the connected displays differ from this profile's layout.
+    ///
+    /// Returns nothing when the profile is fully applied. Only settings the profile
+    /// specifies are compared. Displays the profile doesn't cover should be off, because
+    /// applying the profile turns them off.
+    pub fn layout_differences(&self, displays: &[Display]) -> Vec<String> {
+        let matches = match_displays(&self.displays, displays);
+        let mut differences = Vec::new();
+
+        for display in displays {
+            let Some(config) = matches.iter().find(|m| std::ptr::eq(m.display, display)).map(|m| m.config) else {
+                if display.enabled {
+                    differences.push(format!("{} is on but not part of the profile", display.name));
+                }
+                continue;
+            };
+
+            if config.enabled == Some(false) {
+                if display.enabled {
+                    differences.push(format!("{} is on but should be off", display.name));
+                }
+                continue;
+            }
+
+            if !display.enabled {
+                differences.push(format!("{} is off but should be on", display.name));
+                continue;
+            }
+
+            let current_resolution = display.current_resolution.map(|(width, height)| format!("{}x{}", width, height));
+            if let Some(resolution) = &config.resolution
+                && current_resolution.as_deref() != Some(resolution.trim())
+            {
+                differences.push(format!(
+                    "{} runs at {} instead of {}",
+                    display.name, current_resolution.as_deref().unwrap_or("no resolution"), resolution
+                ));
+            }
+
+            if let Some(position) = config.position
+                && position != display.position
+            {
+                differences.push(format!("{} is at {:?} instead of {:?}", display.name, display.position, position));
+            }
+
+            if let Some(orientation) = &config.orientation
+                && Orientation::from(orientation.as_str()) != display.orientation
+            {
+                differences.push(format!("{} is rotated {} instead of {}", display.name, display.orientation, orientation));
+            }
+
+            // Compare the fixed-point values the server stores rather than the decimals,
+            // which can differ while describing the same transform
+            let fixed_point = |scaling: f64| (scaling * 65536.0).round() as i64;
+            if let Some(scaling) = config.scaling
+                && fixed_point(scaling) != fixed_point(display.scaling)
+            {
+                differences.push(format!("{} is scaled {} instead of {}", display.name, display.scaling, scaling));
+            }
+
+            if config.primary == Some(true) && !display.primary {
+                differences.push(format!("{} is not the primary display", display.name));
+            }
+        }
+
+        differences
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display::Orientation;
     use crate::display::edid::Edid;
 
     /// An EDID without a serial number, like many identical monitors report
@@ -356,6 +425,128 @@ mod tests {
 
         assert_eq!(captured.name, "Contoso C27");
         assert_eq!(captured.edid_hash, Some(edid(1).hash()));
+    }
+
+    /// The same model as `edid(product_id)` but a specific unit with a serial number
+    fn unit(product_id: u16, serial: u32) -> Edid {
+        let mut data = vec![0u8; 128];
+        data[0..8].copy_from_slice(&[0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]);
+        data[8..10].copy_from_slice(&[0x10, 0xAC]);
+        data[10..12].copy_from_slice(&product_id.to_le_bytes());
+        data[12..16].copy_from_slice(&serial.to_le_bytes());
+        Edid::parse(&data).unwrap()
+    }
+
+    /// A config for display `edid` with a position, as `create-config` writes it
+    fn placed(name: &str, edid: &Edid, position: (i32, i32)) -> DisplayConfig {
+        DisplayConfig {
+            resolution: Some("1920x1080".to_string()),
+            position: Some(position),
+            enabled: Some(true),
+            ..config(name, Some(edid.hash()))
+        }
+    }
+
+    fn profile(name: &str, displays: Vec<DisplayConfig>) -> Profile {
+        Profile { name: name.to_string(), description: None, displays }
+    }
+
+    #[test]
+    fn hashed_config_ignores_another_unit_of_the_same_model() {
+        let home_monitor = unit(1, 1111);
+        let office_monitor = unit(1, 2222);
+        let displays = [display("1", "DP-1", "DEL 0001", Some(office_monitor))];
+
+        assert!(match_displays(&[placed("DEL 0001", &home_monitor, (0, 0))], &displays).is_empty());
+    }
+
+    /// Profiles for a laptop used on its own, at a home dock and at an office dock
+    fn laptop_config() -> Config {
+        let laptop = unit(10, 1);
+        Config {
+            default_profile: Some("mobile".to_string()),
+            profiles: vec![
+                profile("mobile", vec![placed("Laptop", &laptop, (0, 0))]),
+                profile("home", vec![
+                    DisplayConfig { enabled: Some(false), ..config("Laptop", Some(laptop.hash())) },
+                    placed("Home left", &unit(20, 1), (0, 0)),
+                    placed("Home right", &unit(20, 2), (1920, 0)),
+                ]),
+                profile("office", vec![
+                    placed("Laptop", &laptop, (0, 0)),
+                    placed("Office", &unit(30, 1), (1920, 0)),
+                ]),
+            ],
+        }
+    }
+
+    #[test]
+    fn profile_follows_the_laptop_between_docks() {
+        let config = laptop_config();
+        let laptop = || display("1", "eDP-1", "Laptop", Some(unit(10, 1)));
+        let chosen = |displays: &[Display]| config.find_matching_profile(displays).unwrap().name.clone();
+
+        assert_eq!(chosen(&[laptop()]), "mobile");
+        assert_eq!(chosen(&[laptop(), display("2", "DP-3-1", "Home left", Some(unit(20, 1))), display("3", "DP-3-2", "Home right", Some(unit(20, 2)))]), "home");
+        // The dock came back from sleep with different port numbers, and the monitors swapped ports
+        assert_eq!(chosen(&[laptop(), display("2", "DP-5-2", "Home right", Some(unit(20, 2))), display("3", "DP-5-1", "Home left", Some(unit(20, 1)))]), "home");
+        assert_eq!(chosen(&[laptop(), display("2", "HDMI-1", "Office", Some(unit(30, 1)))]), "office");
+    }
+
+    #[test]
+    fn unknown_dock_falls_back_to_the_default_profile() {
+        let config = laptop_config();
+        let displays = [display("1", "eDP-1", "Laptop", Some(unit(10, 1))), display("2", "DP-1", "Elsewhere", Some(unit(40, 1)))];
+
+        assert_eq!(config.find_matching_profile(&displays).unwrap().name, "mobile");
+    }
+
+    #[test]
+    fn applied_layout_has_no_differences() {
+        let config = laptop_config();
+        let office = &config.profiles[2];
+        let mut screen = display("2", "HDMI-1", "Office", Some(unit(30, 1)));
+        screen.position = (1920, 0);
+        let displays = [display("1", "eDP-1", "Laptop", Some(unit(10, 1))), screen];
+
+        assert!(office.layout_differences(&displays).is_empty(), "{:?}", office.layout_differences(&displays));
+    }
+
+    #[test]
+    fn layout_reset_after_sleep_is_detected() {
+        let config = laptop_config();
+        let home = &config.profiles[1];
+        // Back from sleep: the laptop panel came back on and the right monitor is off
+        let mut left = display("2", "DP-3-1", "Home left", Some(unit(20, 1)));
+        left.position = (0, 0);
+        let mut right = display("3", "DP-3-2", "Home right", Some(unit(20, 2)));
+        right.enabled = false;
+        let displays = [display("1", "eDP-1", "Laptop", Some(unit(10, 1))), left, right];
+
+        assert_eq!(home.layout_differences(&displays), [
+            "Laptop is on but should be off",
+            "Home right is off but should be on",
+        ]);
+    }
+
+    #[test]
+    fn displays_outside_the_profile_must_be_off() {
+        let config = laptop_config();
+        let mobile = &config.profiles[0];
+        let displays = [display("1", "eDP-1", "Laptop", Some(unit(10, 1))), display("2", "DP-1", "Elsewhere", Some(unit(40, 1)))];
+
+        assert_eq!(mobile.layout_differences(&displays), ["Elsewhere is on but not part of the profile"]);
+    }
+
+    #[test]
+    fn scaling_is_compared_as_the_server_stores_it() {
+        let laptop = unit(10, 1);
+        let mut scaled = display("1", "eDP-1", "Laptop", Some(laptop.clone()));
+        scaled.scaling = 1.32999;
+        // Written differently but the same fixed-point transform
+        let profile = profile("p", vec![DisplayConfig { scaling: Some(1.329987), ..placed("Laptop", &laptop, (0, 0)) }]);
+
+        assert!(profile.layout_differences(&[scaled]).is_empty());
     }
 
     #[test]

@@ -265,7 +265,14 @@ where
         .ok_or_else(|| Error::PlatformSpecific("Failed to get screen".to_string()))?
         .root;
 
-    conn.randr_select_input(root, randr::NotifyMask::SCREEN_CHANGE | randr::NotifyMask::OUTPUT_CHANGE)
+    // Output changes report monitors being connected or removed, property changes report
+    // a monitor's EDID becoming available (it can arrive after the connection), and CRTC
+    // changes report the layout changing, e.g. a dock resetting it after sleep
+    let events = randr::NotifyMask::SCREEN_CHANGE
+        | randr::NotifyMask::OUTPUT_CHANGE
+        | randr::NotifyMask::OUTPUT_PROPERTY
+        | randr::NotifyMask::CRTC_CHANGE;
+    conn.randr_select_input(root, events)
         .map_err(|e| Error::PlatformSpecific(format!("Failed to subscribe to display changes: {}", e)))?
         .check()
         .map_err(|e| Error::PlatformSpecific(format!("Failed to subscribe to display changes: {}", e)))?;

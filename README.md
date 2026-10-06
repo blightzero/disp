@@ -105,7 +105,15 @@ Arrange your displays the way you want them (for example with `xrandr` or your d
 disp create-config --output config.toml
 ```
 
-This saves the current layout as a profile named "detected": for every connected display it records its name and EDID hash, resolution, position, orientation, scaling and primary flag. Connected displays that are turned off are saved with `enabled = false`. Use `--profile <name>` to choose a different profile name. An existing file is not overwritten unless you pass `--force`.
+This saves the current layout as a profile named "detected": for every connected display it records its name and EDID hash, resolution, position, orientation, scaling and primary flag. Connected displays that are turned off are saved with `enabled = false`. Use `--profile <name>` to choose a different profile name.
+
+To add the current layout as another profile to an existing file, use `--add`:
+
+```
+disp create-config --output config.toml --add --profile office
+```
+
+An existing file is not overwritten unless you pass `--force`; with `--add`, `--force` replaces a profile of the same name. Note that saving rewrites the file, so comments in it are lost.
 
 ### Apply a Configuration
 
@@ -131,7 +139,13 @@ disp detect --config config.toml
 disp watch --config config.toml
 ```
 
-`watch` applies the best matching profile at startup and again whenever a monitor is connected, disconnected or swapped for a different one. It waits for change events from the X server rather than polling, so it uses no CPU while idle. Saving the configuration file reloads it and re-applies the matching profile; this also retries a profile that failed to apply. If the new file is invalid, `watch` reports the error and keeps using the previous configuration.
+`watch` keeps the displays in the layout of the best matching profile. It waits for change events from the X server rather than polling, so it uses no CPU while idle, and checks the layout after every change:
+
+- When monitors are connected, disconnected, swapped, or move to other ports (as docks often do when reconnecting or waking from sleep), it chooses the matching profile again and applies it.
+- When the layout no longer matches the profile, for example because a dock came back from sleep with its monitors off or rearranged, it applies the profile again. This also means a layout changed by hand (e.g. with `xrandr`) is put back; to keep a new layout, save it as a profile with `create-config --add --force`.
+- If a profile can't be applied in 3 attempts, it reports why and waits until the displays or the configuration change, instead of retrying endlessly.
+
+Saving the configuration file reloads it and checks the layout again, which also retries a profile that failed to apply. If the new file is invalid, `watch` reports the error and keeps using the previous configuration. Changes are collected until there have been none for a second, so a dock bringing up its monitors one after another leads to a single apply.
 
 ## Configuration File Format
 
@@ -184,7 +198,7 @@ description = "External monitor to the right of the closed laptop"
   - `description`: A description of the profile
   - `displays`: A list of display configurations
     - `name`: What the display is, as shown by `disp list` (e.g. "Contoso C27"). Names come from the EDID, never from the port: monitors of the same model get their serial number added (e.g. "Fabrikam F24 (S/N AB12345C)"), monitors with identical EDIDs are numbered ("#1", "#2"), and displays without an EDID are called "Unknown display"
-    - `edid_hash`: The EDID hash that identifies the display (optional). It takes precedence over `name`. When several connected displays share a hash, `name` decides which config goes to which display
+    - `edid_hash`: The EDID hash that identifies the display, including its serial number (optional). A config with a hash only applies to that exact monitor, so another monitor of the same model, e.g. at a different desk, doesn't pick up its settings. Without a hash, the config applies to any display with the same `name`. When several connected displays share a hash, `name` decides which config goes to which display
     - `resolution`: The display resolution (e.g., "1920x1080")
     - `orientation`: The display orientation ("normal", "left", "right", "inverted")
     - `position`: The display position as [x, y] coordinates
@@ -194,7 +208,28 @@ description = "External monitor to the right of the closed laptop"
 
 ## Displays Are Identified by What They Are
 
-Profiles describe monitors, not ports. A display is matched by its EDID hash (or, without one, by its name from the EDID), so a profile keeps working when you plug a monitor into a different port or swap cables between two monitors: each monitor still gets its own resolution, position and scaling. `watch` notices a monitor moving to another port and applies the layout again.
+Profiles describe monitors, not ports. A display is matched by its EDID hash, which includes the monitor's serial number (or, for configs without a hash, by its name from the EDID), so a profile keeps working when you plug a monitor into a different port, swap cables between two monitors, or a dock renumbers its ports after reconnecting or waking from sleep: each monitor still gets its own resolution, position and scaling. `watch` notices a monitor moving to another port and applies the layout again.
+
+## Using disp with Docks
+
+Create one profile per setup, each time with the displays arranged the way you want them:
+
+```
+# Laptop on its own
+disp create-config --output ~/.config/disp/config.toml --profile mobile
+
+# At each dock, after arranging the monitors
+disp create-config --output ~/.config/disp/config.toml --add --profile home
+disp create-config --output ~/.config/disp/config.toml --add --profile office
+```
+
+Then set `default_profile = "mobile"` at the top of the file, so that at a dock you haven't saved a profile for yet, the laptop screen stays on and the unknown monitors are turned off. Finally, start `watch` with your graphical session, for example from `~/.xprofile`:
+
+```
+disp watch --config ~/.config/disp/config.toml &
+```
+
+From then on, connecting to a dock, switching docks or undocking applies the matching profile automatically.
 
 ## Getting EDID Hashes
 
