@@ -1,0 +1,72 @@
+# Display Configuration Example
+#
+# Generate a profile for your own layout with:
+#   disp create-config --output config.toml
+#
+# `name` is the output name and `edid_hash` identifies the monitor; both are shown by
+# `disp list --detailed`. The hashes below are examples and won't match your monitors.
+
+# Default profile to use when no profile matches
+default_profile = "laptop"
+
+# Available profiles
+[[profiles]]
+name = "laptop"
+description = "Laptop screen only"
+
+  [[profiles.displays]]
+  name = "eDP-1"
+  edid_hash = "0f1e2d3c4b5a6978"
+  resolution = "1920x1080"
+  orientation = "normal"
+  position = [0, 0]
+  scaling = 1.0
+  primary = true
+  enabled = true
+
+[[profiles]]
+name = "docked"
+description = "External monitor to the right of the laptop screen"
+
+  [[profiles.displays]]
+  name = "eDP-1"
+  edid_hash = "0f1e2d3c4b5a6978"
+  resolution = "1920x1080"
+  orientation = "normal"
+  position = [0, 0]
+  scaling = 1.0
+  primary = false
+  enabled = true
+
+  [[profiles.displays]]
+  name = "DP-1"
+  edid_hash = "1a2b3c4d5e6f7081"
+  resolution = "2560x1440"
+  orientation = "normal"
+  position = [1920, 0]
+  scaling = 1.0
+  primary = true
+  enabled = true
+
+[[profiles]]
+name = "presentation"
+description = "Laptop screen with a projector on HDMI"
+
+  [[profiles.displays]]
+  name = "eDP-1"
+  edid_hash = "0f1e2d3c4b5a6978"
+  resolution = "1920x1080"
+  orientation = "normal"
+  position = [0, 0]
+  scaling = 1.0
+  primary = true
+  enabled = true
+
+  [[profiles.displays]]
+  name = "HDMI-1"
+  resolution = "1920x1080"
+  orientation = "normal"
+  position = [1920, 0]
+  scaling = 1.0
+  primary = false
+  enabled = true
