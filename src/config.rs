@@ -8,10 +8,11 @@ use crate::error::{Error, Result};
 /// Represents a display configuration
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DisplayConfig {
-    /// The display name or identifier
+    /// What the display is, as shown by `disp list`, e.g. "Contoso C27". Never the port
+    /// it's plugged into. Used to match displays when no EDID hash is given.
     pub name: String,
-    
-    /// The EDID hash for identification
+
+    /// The EDID hash that identifies the display, regardless of the port it's plugged into
     pub edid_hash: Option<String>,
     
     /// The display resolution (width x height)
@@ -164,11 +165,12 @@ pub struct DisplayMatch<'a> {
 
 /// Match display configs to connected displays.
 ///
-/// Each display is matched to at most one config. EDID hash matches are made before name
-/// matches, so a name-only config can't take a display that another config identifies by
-/// EDID. Identical monitors without a serial number share an EDID hash; among those, the
-/// display whose name equals the config name is preferred, so they can be told apart by
-/// setting `name` to the output name.
+/// Displays are identified by what they are, never by the port they're plugged into, so a
+/// config applies to its monitor on whichever port it is connected to. Each display is
+/// matched to at most one config. EDID hash matches are made before name matches, so a
+/// name-only config can't take a display that another config identifies by EDID. When
+/// several displays share an EDID hash, the one whose name equals the config name is
+/// preferred.
 pub fn match_displays<'a>(configs: &'a [DisplayConfig], displays: &'a [Display]) -> Vec<DisplayMatch<'a>> {
     let mut claimed = vec![false; displays.len()];
     let mut assigned: Vec<Option<(usize, MatchKind)>> = vec![None; configs.len()];
@@ -268,9 +270,11 @@ mod tests {
         Edid::parse(&data).unwrap()
     }
 
-    fn display(id: &str, name: &str, edid: Option<Edid>) -> Display {
+    /// A connected display: `id` and `output` describe where it is plugged in, `name` what it is
+    fn display(id: &str, output: &str, name: &str, edid: Option<Edid>) -> Display {
         Display {
             id: id.to_string(),
+            output: output.to_string(),
             name: name.to_string(),
             edid,
             current_resolution: Some((1920, 1080)),
@@ -303,7 +307,7 @@ mod tests {
     #[test]
     fn identical_monitors_match_separate_displays() {
         let hash = edid(1).hash();
-        let displays = [display("1", "DP-1", Some(edid(1))), display("2", "DP-2", Some(edid(1)))];
+        let displays = [display("1", "DP-1", "DEL 0001 #1", Some(edid(1))), display("2", "DP-2", "DEL 0001 #2", Some(edid(1)))];
         let configs = [config("left", Some(hash.clone())), config("right", Some(hash))];
 
         assert_eq!(matched_ids(&match_displays(&configs, &displays)), [("left", "1"), ("right", "2")]);
@@ -312,25 +316,52 @@ mod tests {
     #[test]
     fn identical_monitors_are_told_apart_by_name() {
         let hash = edid(1).hash();
-        let displays = [display("1", "DP-1", Some(edid(1))), display("2", "DP-2", Some(edid(1)))];
-        let configs = [config("DP-2", Some(hash.clone())), config("DP-1", Some(hash))];
+        let displays = [display("1", "DP-1", "DEL 0001 #1", Some(edid(1))), display("2", "DP-2", "DEL 0001 #2", Some(edid(1)))];
+        let configs = [config("DEL 0001 #2", Some(hash.clone())), config("DEL 0001 #1", Some(hash))];
 
-        assert_eq!(matched_ids(&match_displays(&configs, &displays)), [("DP-2", "2"), ("DP-1", "1")]);
+        assert_eq!(matched_ids(&match_displays(&configs, &displays)), [("DEL 0001 #2", "2"), ("DEL 0001 #1", "1")]);
     }
 
     #[test]
     fn edid_match_wins_over_earlier_name_match() {
-        let displays = [display("1", "DP-1", Some(edid(1))), display("2", "DP-2", Some(edid(2)))];
+        let displays = [display("1", "DP-1", "DEL 0001", Some(edid(1))), display("2", "DP-2", "DEL 0002", Some(edid(2)))];
         // The name-only config comes first but must not take the display the second config's EDID identifies
-        let configs = [config("DP-1", None), config("external", Some(edid(1).hash()))];
+        let configs = [config("DEL 0001", None), config("external", Some(edid(1).hash()))];
 
         assert_eq!(matched_ids(&match_displays(&configs, &displays)), [("external", "1")]);
     }
 
     #[test]
+    fn config_follows_its_monitor_to_another_port() {
+        let configs = [config("left", Some(edid(1).hash())), config("right", Some(edid(2).hash()))];
+        let before = [display("1", "DP-1", "DEL 0001", Some(edid(1))), display("2", "DP-2", "DEL 0002", Some(edid(2)))];
+        // The same two monitors with their cables swapped
+        let after = [display("1", "DP-1", "DEL 0002", Some(edid(2))), display("2", "DP-2", "DEL 0001", Some(edid(1)))];
+
+        assert_eq!(matched_ids(&match_displays(&configs, &before)), [("left", "1"), ("right", "2")]);
+        assert_eq!(matched_ids(&match_displays(&configs, &after)), [("left", "2"), ("right", "1")]);
+    }
+
+    #[test]
+    fn names_match_what_a_display_is_not_its_port() {
+        let displays = [display("1", "DP-1", "Contoso C27", Some(edid(1)))];
+
+        assert_eq!(matched_ids(&match_displays(&[config("Contoso C27", None)], &displays)), [("Contoso C27", "1")]);
+        assert!(match_displays(&[config("DP-1", None)], &displays).is_empty());
+    }
+
+    #[test]
+    fn captured_display_config_has_no_port() {
+        let captured = DisplayConfig::from_display(&display("1", "DP-1", "Contoso C27", Some(edid(1))));
+
+        assert_eq!(captured.name, "Contoso C27");
+        assert_eq!(captured.edid_hash, Some(edid(1).hash()));
+    }
+
+    #[test]
     fn profile_with_both_identical_monitors_wins() {
         let hash = edid(1).hash();
-        let displays = [display("1", "DP-1", Some(edid(1))), display("2", "DP-2", Some(edid(1)))];
+        let displays = [display("1", "DP-1", "DEL 0001 #1", Some(edid(1))), display("2", "DP-2", "DEL 0001 #2", Some(edid(1)))];
         let profile = |name: &str, count| Profile {
             name: name.to_string(),
             description: None,
@@ -354,18 +385,18 @@ mod tests {
 
     #[test]
     fn one_primary_display_is_valid() {
-        assert!(single_profile(vec![primary_config("DP-1", Some(true)), config("DP-2", None)]).validate().is_ok());
+        assert!(single_profile(vec![primary_config("Contoso C27", Some(true)), config("Laptop Panel", None)]).validate().is_ok());
     }
 
     #[test]
     fn two_primary_displays_are_rejected() {
-        let err = single_profile(vec![primary_config("DP-1", None), primary_config("DP-2", None)]).validate().unwrap_err();
+        let err = single_profile(vec![primary_config("Contoso C27", None), primary_config("Laptop Panel", None)]).validate().unwrap_err();
         assert!(err.to_string().contains("more than one display as primary"), "{}", err);
     }
 
     #[test]
     fn disabled_primary_display_is_rejected() {
-        let err = single_profile(vec![primary_config("DP-1", Some(false))]).validate().unwrap_err();
+        let err = single_profile(vec![primary_config("Contoso C27", Some(false))]).validate().unwrap_err();
         assert!(err.to_string().contains("can't be primary and disabled"), "{}", err);
     }
 }

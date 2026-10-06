@@ -106,14 +106,14 @@ pub fn run() -> Result<()> {
             
             println!("Connected displays:");
             for (i, display) in displays.iter().enumerate() {
-                println!("{}. {} ({})", i + 1, display.name, display.id);
+                println!("{}. {} (on {})", i + 1, display.name, display.output);
                 
                 if args.detailed {
                     if let Some(edid) = &display.edid {
                         println!("   EDID: {}", edid);
                         println!("   EDID Hash: {}", edid.hash());
                         println!("   Product ID: {:#06x}", edid.product_id);
-                        if let Some(serial) = edid.serial_number {
+                        if let Some(serial) = edid.serial() {
                             println!("   Serial Number: {}", serial);
                         }
                         println!("   Manufactured: week {} of {}", edid.manufacture_week, edid.manufacture_year);
@@ -186,14 +186,14 @@ pub fn run() -> Result<()> {
             config.save_to_file(&args.output)?;
 
             println!("Saved the current layout as profile \"{}\" to {}", args.profile, args.output.display());
-            for display in &config.profiles[0].displays {
+            for (display, detected) in config.profiles[0].displays.iter().zip(&displays) {
                 let state = match (&display.resolution, display.position, display.enabled) {
                     (_, _, Some(false)) => "disabled".to_string(),
                     (Some(resolution), Some((x, y)), _) => format!("{} at ({}, {})", resolution, x, y),
                     _ => "enabled".to_string(),
                 };
                 let primary = if display.primary == Some(true) { ", primary" } else { "" };
-                println!("  {}: {}{}", display.name, state, primary);
+                println!("  {} (currently on {}): {}{}", display.name, detected.output, state, primary);
             }
         }
         
@@ -314,12 +314,16 @@ pub fn run() -> Result<()> {
                 if displays_changed || config_changed {
                     match display_manager.get_displays() {
                         Ok(displays) => {
+                            // The port is part of this on purpose: a monitor moved to another
+                            // port needs the layout applied again on its new port
                             let connected: Vec<(String, Option<String>)> = displays.iter()
-                                .map(|d| (d.name.clone(), d.edid.as_ref().map(|e| e.hash())))
+                                .map(|d| (d.output.clone(), d.edid.as_ref().map(|e| e.hash())))
                                 .collect();
 
                             if applied_for.as_ref() != Some(&connected) {
-                                let names: Vec<&str> = displays.iter().map(|d| d.name.as_str()).collect();
+                                let names: Vec<String> = displays.iter()
+                                    .map(|d| format!("{} on {}", d.name, d.output))
+                                    .collect();
                                 println!("Connected displays: {}", names.join(", "));
 
                                 match config.find_matching_profile(&displays) {

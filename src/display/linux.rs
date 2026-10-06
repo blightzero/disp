@@ -4,7 +4,7 @@ use x11rb::protocol::randr::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{self, ConnectionExt as _};
 
 use crate::config::{DisplayConfig, match_displays};
-use crate::display::{Display, DisplayManager, Edid, Orientation};
+use crate::display::{Display, DisplayManager, Edid, Orientation, assign_display_names};
 use crate::error::{Error, Result};
 
 pub struct LinuxDisplayManager {
@@ -145,20 +145,20 @@ impl LinuxDisplayManager {
             .map_err(|e| Error::PlatformSpecific(format!("Failed to set screen size to {}x{}: {}", width, height, e)))
     }
 
-    /// Read the scaling factor of a CRTC from its transform, the inverse of what
-    /// `apply_config` sets. Returns 1.0 if the server doesn't support transforms.
-    fn crtc_scaling(&self, crtc: randr::Crtc, display_name: &str) -> f64 {
+    /// Read the scaling factor of a CRTC from its transform, the same value
+    /// `apply_config` sets from a config. Returns 1.0 if the server doesn't support transforms.
+    fn crtc_scaling(&self, crtc: randr::Crtc, output_name: &str) -> f64 {
         let transform = match self.conn.randr_get_crtc_transform(crtc).ok().and_then(|cookie| cookie.reply().ok()) {
             Some(reply) => reply.current_transform,
             None => return 1.0,
         };
 
         if transform.matrix11 <= 0 {
-            log::warn!("Display {} has an unsupported transform, reporting scaling 1.0", display_name);
+            log::warn!("The display on {} has an unsupported transform, reporting scaling 1.0", output_name);
             return 1.0;
         }
         if transform.matrix11 != transform.matrix22 {
-            log::warn!("Display {} is scaled differently horizontally and vertically, reporting the horizontal scaling", display_name);
+            log::warn!("The display on {} is scaled differently horizontally and vertically, reporting the horizontal scaling", output_name);
         }
 
         Self::scaling_from_matrix_value(transform.matrix11)
@@ -320,16 +320,16 @@ impl DisplayManager for LinuxDisplayManager {
                 continue;
             }
             
-            // Get output name
-            let name = String::from_utf8_lossy(&output_info.name).to_string();
-            
+            // Get the connector name, e.g. "DP-1"
+            let output_name = String::from_utf8_lossy(&output_info.name).to_string();
+
             // Try to get EDID data. A missing or malformed EDID (common with adapters and
             // KVMs) only means this display can't be matched by EDID hash.
             let edid = self.get_edid_from_output(output).unwrap_or_else(|e| {
-                log::warn!("Ignoring unreadable EDID for display {}: {}", name, e);
+                log::warn!("Ignoring unreadable EDID for the display on {}: {}", output_name, e);
                 None
             });
-            
+
             // Get crtc info if available
             let (current_resolution, position, orientation, scaling, enabled) = if output_info.crtc != 0 {
                 let crtc_info = self.conn.randr_get_crtc_info(output_info.crtc, resources.config_timestamp)
@@ -340,23 +340,24 @@ impl DisplayManager for LinuxDisplayManager {
                 let current_mode = mode_map.get(&crtc_info.mode).map(|m| Self::parse_resolution(m));
                 let position = (crtc_info.x as i32, crtc_info.y as i32);
                 let orientation = Self::parse_orientation(crtc_info.rotation.into());
-                let scaling = self.crtc_scaling(output_info.crtc, &name);
+                let scaling = self.crtc_scaling(output_info.crtc, &output_name);
                 let enabled = crtc_info.mode != 0;
 
                 (current_mode, position, orientation, scaling, enabled)
             } else {
                 (None, (0, 0), Orientation::Normal, 1.0, false)
             };
-            
+
             // Get available resolutions
             let available_resolutions = output_info.modes.iter()
                 .filter_map(|&mode_id| mode_map.get(&mode_id).map(|m| Self::parse_resolution(m)))
                 .collect();
-            
-            // Create display
+
+            // Create display. The name is assigned once all displays are known.
             let display = Display {
                 id: format!("{}", output),
-                name,
+                output: output_name,
+                name: String::new(),
                 edid,
                 current_resolution,
                 available_resolutions,
@@ -366,10 +367,12 @@ impl DisplayManager for LinuxDisplayManager {
                 primary: output == primary_output,
                 enabled,
             };
-            
+
             displays.push(display);
         }
-        
+
+        assign_display_names(&mut displays);
+
         Ok(displays)
     }
     
@@ -381,7 +384,7 @@ impl DisplayManager for LinuxDisplayManager {
         // Create a map of display ID to config based on EDID hash or fallback to name
         let mut config_map = HashMap::new();
         for m in match_displays(configs, displays) {
-            log::info!("Config {} matches display {} ({}) by {:?}", m.config.name, m.display.name, m.display.id, m.kind);
+            log::info!("Config {} matches display {} on {} by {:?}", m.config.name, m.display.name, m.display.output, m.kind);
             config_map.insert(&m.display.id, m.config);
         }
         for config in configs {
@@ -399,17 +402,17 @@ impl DisplayManager for LinuxDisplayManager {
             let config = match config_map.get(&display.id) {
                 Some(c) => c,
                 None => {
-                    log::info!("No configuration for display {} ({}), it will be disabled", display.name, display.id);
+                    log::info!("No configuration for display {} on {}, it will be disabled", display.name, display.output);
                     continue;
                 }
             };
 
             if !config.enabled.unwrap_or(true) {
-                log::info!("Display {} ({}) is configured to be disabled", display.name, display.id);
+                log::info!("Display {} on {} is configured to be disabled", display.name, display.output);
                 continue;
             }
 
-            log::info!("Planning display: {} ({})", display.name, display.id);
+            log::info!("Planning display: {} on {}", display.name, display.output);
 
             // Parse output ID
             let output = display.id.parse::<u32>()
@@ -622,7 +625,7 @@ impl DisplayManager for LinuxDisplayManager {
 
         for plan in &plans {
             let display = plan.display;
-            log::info!("Enabling display {} ({}) with:", display.name, display.id);
+            log::info!("Enabling display {} on {} with:", display.name, display.output);
             log::info!("    Position: ({}, {})", plan.position.0, plan.position.1);
             log::info!("    Mode: {}", plan.mode);
             log::info!("    Rotation: {:?}", plan.rotation);

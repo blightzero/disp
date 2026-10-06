@@ -105,7 +105,7 @@ Arrange your displays the way you want them (for example with `xrandr` or your d
 disp create-config --output config.toml
 ```
 
-This saves the current layout as a profile named "detected": for every connected display it records the output name, EDID hash, resolution, position, orientation, scaling and primary flag. Connected displays that are turned off are saved with `enabled = false`. Use `--profile <name>` to choose a different profile name. An existing file is not overwritten unless you pass `--force`.
+This saves the current layout as a profile named "detected": for every connected display it records its name and EDID hash, resolution, position, orientation, scaling and primary flag. Connected displays that are turned off are saved with `enabled = false`. Use `--profile <name>` to choose a different profile name. An existing file is not overwritten unless you pass `--force`.
 
 ### Apply a Configuration
 
@@ -147,7 +147,7 @@ name = "laptop"
 description = "Laptop screen only"
 
   [[profiles.displays]]
-  name = "eDP-1"
+  name = "ACM 1A2B"
   edid_hash = "0f1e2d3c4b5a6978" # From `disp list --detailed`
   resolution = "1920x1080"
   orientation = "normal"
@@ -161,13 +161,13 @@ name = "docked"
 description = "External monitor to the right of the closed laptop"
 
   [[profiles.displays]]
-  name = "eDP-1"
+  name = "ACM 1A2B"
   edid_hash = "0f1e2d3c4b5a6978"
   enabled = false
 
   [[profiles.displays]]
-  name = "DP-1"
-  edid_hash = "1a2b3c4d5e6f7081"
+  name = "Contoso C27"
+  edid_hash = "8796a5b4c3d2e1f0"
   resolution = "2560x1440"
   orientation = "normal"
   position = [0, 0]
@@ -183,14 +183,18 @@ description = "External monitor to the right of the closed laptop"
   - `name`: The name of the profile
   - `description`: A description of the profile
   - `displays`: A list of display configurations
-    - `name`: The output name of the display, as shown by `disp list` (e.g. "DP-1")
-    - `edid_hash`: The EDID hash for identification (optional). It takes precedence over `name`; for identical monitors that share a hash, `name` decides which config goes to which monitor
+    - `name`: What the display is, as shown by `disp list` (e.g. "Contoso C27"). Names come from the EDID, never from the port: monitors of the same model get their serial number added (e.g. "Fabrikam F24 (S/N AB12345C)"), monitors with identical EDIDs are numbered ("#1", "#2"), and displays without an EDID are called "Unknown display"
+    - `edid_hash`: The EDID hash that identifies the display (optional). It takes precedence over `name`. When several connected displays share a hash, `name` decides which config goes to which display
     - `resolution`: The display resolution (e.g., "1920x1080")
     - `orientation`: The display orientation ("normal", "left", "right", "inverted")
     - `position`: The display position as [x, y] coordinates
     - `scaling`: The display scaling factor, with the same meaning as `xrandr --scale`. `2.0` doubles the desktop resolution: a 2560x1440 mode covers a 5120x2880 area, so everything looks half as large. `0.5` halves it, so everything looks twice as large. `create-config` records the exact value currently in use
     - `primary`: Whether this is the primary display. At most one display per profile can be primary, and it can't also have `enabled = false`. If no display in a profile is marked primary, the current primary display is left unchanged
     - `enabled`: Whether the display should be enabled. Connected displays that don't match any display in the profile are turned off. A profile that would leave no display enabled is refused
+
+## Displays Are Identified by What They Are
+
+Profiles describe monitors, not ports. A display is matched by its EDID hash (or, without one, by its name from the EDID), so a profile keeps working when you plug a monitor into a different port or swap cables between two monitors: each monitor still gets its own resolution, position and scaling. `watch` notices a monitor moving to another port and applies the layout again.
 
 ## Getting EDID Hashes
 

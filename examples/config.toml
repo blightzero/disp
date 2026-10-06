@@ -3,8 +3,9 @@
 # Generate a profile for your own layout with:
 #   disp create-config --output config.toml
 #
-# `name` is the output name and `edid_hash` identifies the monitor; both are shown by
-# `disp list --detailed`. The hashes below are examples and won't match your monitors.
+# `name` says what the display is and `edid_hash` identifies it, never the port it's
+# plugged into; both are shown by `disp list --detailed`. The names and hashes below
+# are examples and won't match your monitors.
 
 # Default profile to use when no profile matches
 default_profile = "laptop"
@@ -15,7 +16,7 @@ name = "laptop"
 description = "Laptop screen only"
 
   [[profiles.displays]]
-  name = "eDP-1"
+  name = "ACM 1A2B"
   edid_hash = "0f1e2d3c4b5a6978"
   resolution = "1920x1080"
   orientation = "normal"
@@ -29,7 +30,7 @@ name = "docked"
 description = "External monitor to the right of the laptop screen"
 
   [[profiles.displays]]
-  name = "eDP-1"
+  name = "ACM 1A2B"
   edid_hash = "0f1e2d3c4b5a6978"
   resolution = "1920x1080"
   orientation = "normal"
@@ -39,8 +40,8 @@ description = "External monitor to the right of the laptop screen"
   enabled = true
 
   [[profiles.displays]]
-  name = "DP-1"
-  edid_hash = "1a2b3c4d5e6f7081"
+  name = "Contoso C27"
+  edid_hash = "8796a5b4c3d2e1f0"
   resolution = "2560x1440"
   orientation = "normal"
   position = [1920, 0]
@@ -50,10 +51,10 @@ description = "External monitor to the right of the laptop screen"
 
 [[profiles]]
 name = "presentation"
-description = "Laptop screen with a projector on HDMI"
+description = "Laptop screen with a projector that provides no EDID"
 
   [[profiles.displays]]
-  name = "eDP-1"
+  name = "ACM 1A2B"
   edid_hash = "0f1e2d3c4b5a6978"
   resolution = "1920x1080"
   orientation = "normal"
@@ -63,7 +64,7 @@ description = "Laptop screen with a projector on HDMI"
   enabled = true
 
   [[profiles.displays]]
-  name = "HDMI-1"
+  name = "Unknown display"
   resolution = "1920x1080"
   orientation = "normal"
   position = [1920, 0]
