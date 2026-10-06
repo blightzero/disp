@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-use crate::display::{Display, Orientation};
+use crate::display::{Display, Orientation, SCALING_FILTER};
 use crate::error::{Error, Result};
 
 /// Represents a display configuration
@@ -316,6 +316,16 @@ impl Profile {
                 differences.push(format!("{} is scaled {} instead of {}", display.name, display.scaling, scaling));
             }
 
+            // A scaled display drawn with any other filter has distorted text, e.g. one scaled
+            // with "nearest" by an older version of disp
+            if fixed_point(display.scaling) != 65536 && display.scaling_filter != SCALING_FILTER {
+                let filter = if display.scaling_filter.is_empty() { "no" } else { display.scaling_filter.as_str() };
+                differences.push(format!(
+                    "{} is scaled with the {} filter instead of {}, which distorts text",
+                    display.name, filter, SCALING_FILTER
+                ));
+            }
+
             if config.primary == Some(true) && !display.primary {
                 differences.push(format!("{} is not the primary display", display.name));
             }
@@ -351,6 +361,7 @@ mod tests {
             position: (0, 0),
             orientation: Orientation::Normal,
             scaling: 1.0,
+            scaling_filter: String::new(),
             primary: false,
             enabled: true,
         }
@@ -543,9 +554,26 @@ mod tests {
         let laptop = unit(10, 1);
         let mut scaled = display("1", "eDP-1", "Laptop", Some(laptop.clone()));
         scaled.scaling = 1.32999;
+        scaled.scaling_filter = SCALING_FILTER.to_string();
         // Written differently but the same fixed-point transform
         let profile = profile("p", vec![DisplayConfig { scaling: Some(1.329987), ..placed("Laptop", &laptop, (0, 0)) }]);
 
+        assert!(profile.layout_differences(&[scaled]).is_empty());
+    }
+
+    #[test]
+    fn scaling_with_the_nearest_filter_is_a_difference() {
+        let monitor = unit(20, 1);
+        let mut scaled = display("1", "DP-4", "Home left", Some(monitor.clone()));
+        scaled.scaling = 2.0;
+        scaled.scaling_filter = "nearest".to_string();
+        let profile = profile("p", vec![DisplayConfig { scaling: Some(2.0), ..placed("Home left", &monitor, (0, 0)) }]);
+
+        assert_eq!(profile.layout_differences(&[scaled.clone()]), [
+            "Home left is scaled with the nearest filter instead of bilinear, which distorts text",
+        ]);
+
+        scaled.scaling_filter = SCALING_FILTER.to_string();
         assert!(profile.layout_differences(&[scaled]).is_empty());
     }
 

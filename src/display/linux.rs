@@ -4,7 +4,7 @@ use x11rb::protocol::randr::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{self, ConnectionExt as _};
 
 use crate::config::{DisplayConfig, match_displays};
-use crate::display::{Display, DisplayManager, Edid, Orientation, assign_display_names};
+use crate::display::{Display, DisplayManager, Edid, Orientation, SCALING_FILTER, assign_display_names};
 use crate::error::{Error, Result};
 
 pub struct LinuxDisplayManager {
@@ -145,23 +145,26 @@ impl LinuxDisplayManager {
             .map_err(|e| Error::PlatformSpecific(format!("Failed to set screen size to {}x{}: {}", width, height, e)))
     }
 
-    /// Read the scaling factor of a CRTC from its transform, the same value
-    /// `apply_config` sets from a config. Returns 1.0 if the server doesn't support transforms.
-    fn crtc_scaling(&self, crtc: randr::Crtc, output_name: &str) -> f64 {
-        let transform = match self.conn.randr_get_crtc_transform(crtc).ok().and_then(|cookie| cookie.reply().ok()) {
-            Some(reply) => reply.current_transform,
-            None => return 1.0,
+    /// Read the scaling factor of a CRTC from its transform, the same value `apply_config`
+    /// sets from a config, and the filter used for it. Returns 1.0 and no filter if the
+    /// server doesn't support transforms.
+    fn crtc_scaling(&self, crtc: randr::Crtc, output_name: &str) -> (f64, String) {
+        let reply = match self.conn.randr_get_crtc_transform(crtc).ok().and_then(|cookie| cookie.reply().ok()) {
+            Some(reply) => reply,
+            None => return (1.0, String::new()),
         };
+        let transform = reply.current_transform;
+        let filter = String::from_utf8_lossy(&reply.current_filter_name).to_string();
 
         if transform.matrix11 <= 0 {
             log::warn!("The display on {} has an unsupported transform, reporting scaling 1.0", output_name);
-            return 1.0;
+            return (1.0, filter);
         }
         if transform.matrix11 != transform.matrix22 {
             log::warn!("The display on {} is scaled differently horizontally and vertically, reporting the horizontal scaling", output_name);
         }
 
-        Self::scaling_from_matrix_value(transform.matrix11)
+        (Self::scaling_from_matrix_value(transform.matrix11), filter)
     }
 
     /// The scaling factor for a 16.16 fixed-point transform matrix diagonal.
@@ -338,7 +341,7 @@ impl DisplayManager for LinuxDisplayManager {
             });
 
             // Get crtc info if available
-            let (current_resolution, position, orientation, scaling, enabled) = if output_info.crtc != 0 {
+            let (current_resolution, position, orientation, (scaling, scaling_filter), enabled) = if output_info.crtc != 0 {
                 let crtc_info = self.conn.randr_get_crtc_info(output_info.crtc, resources.config_timestamp)
                     .map_err(|e| Error::PlatformSpecific(format!("Failed to get CRTC info: {}", e)))?
                     .reply()
@@ -352,7 +355,7 @@ impl DisplayManager for LinuxDisplayManager {
 
                 (current_mode, position, orientation, scaling, enabled)
             } else {
-                (None, (0, 0), Orientation::Normal, 1.0, false)
+                (None, (0, 0), Orientation::Normal, (1.0, String::new()), false)
             };
 
             // Get available resolutions
@@ -371,6 +374,7 @@ impl DisplayManager for LinuxDisplayManager {
                 position,
                 orientation,
                 scaling,
+                scaling_filter,
                 primary: output == primary_output,
                 enabled,
             };
@@ -657,22 +661,24 @@ impl DisplayManager for LinuxDisplayManager {
                 matrix33: 65536,
             };
 
+            // Scaled displays use the same smoothing filter as `xrandr --scale`. With "nearest",
+            // scaling down drops desktop pixels and breaks up thin font strokes.
+            let identity = scale_factor == 65536;
+            let filter_name = if identity { "nearest" } else { SCALING_FILTER };
+
             // Without scaling, only reset a transform left behind by an earlier scaled layout.
             // Some servers (e.g. Xvfb) reject transforms entirely, even the identity.
-            let needs_transform = plan.scaling != 1.0 || self.conn.randr_get_crtc_transform(plan.crtc).ok()
+            let needs_transform = !identity || self.conn.randr_get_crtc_transform(plan.crtc).ok()
                 .and_then(|cookie| cookie.reply().ok())
                 .is_some_and(|t| t.current_transform != transform || t.pending_transform != transform);
 
             if needs_transform {
-                log::info!("  Setting transform for scaling factor {}", plan.scaling);
-
-                // Convert the filter name to bytes
-                let filter_name = b"nearest"; // Use "nearest" filter for scaling
+                log::info!("  Setting transform for scaling factor {} with the {} filter", plan.scaling, filter_name);
 
                 match self.conn.randr_set_crtc_transform(
                     plan.crtc,
                     transform,
-                    filter_name,
+                    filter_name.as_bytes(),
                     &[], // No filter parameters
                 ) {
                     Ok(cookie) => {

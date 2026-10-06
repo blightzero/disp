@@ -42,6 +42,9 @@ pub struct Display {
     
     /// Current scaling factor
     pub scaling: f64,
+
+    /// Filter the server uses to scale the display, empty if it was never set
+    pub scaling_filter: String,
     
     /// Whether this is the primary display
     pub primary: bool,
@@ -83,6 +86,10 @@ impl From<&str> for Orientation {
 
 /// Name given to displays that provide no EDID
 pub const UNKNOWN_DISPLAY_NAME: &str = "Unknown display";
+
+/// Filter for scaled displays. Like `xrandr --scale`, this blends neighbouring desktop
+/// pixels; "nearest" would drop pixels when scaling down and break up thin font strokes.
+pub const SCALING_FILTER: &str = "bilinear";
 
 /// Name every display after what it is rather than the port it is plugged into.
 ///
@@ -171,6 +178,7 @@ mod tests {
             position: (0, 0),
             orientation: Orientation::Normal,
             scaling: 1.0,
+            scaling_filter: String::new(),
             primary: false,
             enabled: true,
         }
