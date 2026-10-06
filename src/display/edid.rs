@@ -172,11 +172,11 @@ impl fmt::Display for Edid {
 mod tests {
     use super::*;
 
-    /// A minimal EDID block: manufacturer "DEL", product 0x4321 and the given serial
+    /// A minimal EDID block: manufacturer "ACM", product 0x4321 and the given serial
     fn edid_block(serial: u32) -> Vec<u8> {
         let mut data = vec![0u8; 128];
         data[0..8].copy_from_slice(&[0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]);
-        data[8..10].copy_from_slice(&[0x10, 0xAC]);
+        data[8..10].copy_from_slice(&[0x04, 0x6D]);
         data[10..12].copy_from_slice(&[0x21, 0x43]);
         data[12..16].copy_from_slice(&serial.to_le_bytes());
         data
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn parses_identity_fields() {
         let edid = Edid::parse(&edid_block(0x12345678)).unwrap();
-        assert_eq!(edid.manufacturer, "DEL");
+        assert_eq!(edid.manufacturer, "ACM");
         assert_eq!(edid.product_id, 0x4321);
         assert_eq!(edid.serial_number, Some(0x12345678));
     }
@@ -215,23 +215,23 @@ mod tests {
 
     #[test]
     fn model_name_falls_back_to_manufacturer_and_product() {
-        assert_eq!(Edid::parse(&edid_block(0)).unwrap().model_name(), "DEL 4321");
+        assert_eq!(Edid::parse(&edid_block(0)).unwrap().model_name(), "ACM 4321");
     }
 
     // Hashes are saved in config files, so these values must never change
     #[test]
     fn hash_is_stable() {
-        assert_eq!(Edid::parse(&edid_block(0x12345678)).unwrap().hash(), "4491eb5167355ef6");
-        assert_eq!(Edid::parse(&edid_block(0)).unwrap().hash(), "fc287ad0f9821bb6");
+        assert_eq!(Edid::parse(&edid_block(0x12345678)).unwrap().hash(), "febf4ddcd53c05c8");
+        assert_eq!(Edid::parse(&edid_block(0)).unwrap().hash(), "49a79d4ff6c79be0");
         // The model name doesn't identify a unit, so it must not change the hash
         let named = with_descriptor(edid_block(0), 1, 0xFC, "Contoso C27");
-        assert_eq!(Edid::parse(&named).unwrap().hash(), "fc287ad0f9821bb6");
+        assert_eq!(Edid::parse(&named).unwrap().hash(), "49a79d4ff6c79be0");
     }
 
     #[test]
     fn text_serial_tells_identical_models_apart() {
         let with_serial = with_descriptor(edid_block(0), 2, 0xFF, "ABC123");
-        assert_eq!(Edid::parse(&with_serial).unwrap().hash(), "4ac66a33507dcb56");
+        assert_eq!(Edid::parse(&with_serial).unwrap().hash(), "90c3d4627e9eda30");
     }
 
     #[test]

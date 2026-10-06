@@ -344,7 +344,7 @@ mod tests {
     fn edid(product_id: u16) -> Edid {
         let mut data = vec![0u8; 128];
         data[0..8].copy_from_slice(&[0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]);
-        data[8..10].copy_from_slice(&[0x10, 0xAC]);
+        data[8..10].copy_from_slice(&[0x04, 0x6D]);
         data[10..12].copy_from_slice(&product_id.to_le_bytes());
         Edid::parse(&data).unwrap()
     }
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn identical_monitors_match_separate_displays() {
         let hash = edid(1).hash();
-        let displays = [display("1", "DP-1", "DEL 0001 #1", Some(edid(1))), display("2", "DP-2", "DEL 0001 #2", Some(edid(1)))];
+        let displays = [display("1", "DP-1", "ACM 0001 #1", Some(edid(1))), display("2", "DP-2", "ACM 0001 #2", Some(edid(1)))];
         let configs = [config("left", Some(hash.clone())), config("right", Some(hash))];
 
         assert_eq!(matched_ids(&match_displays(&configs, &displays)), [("left", "1"), ("right", "2")]);
@@ -396,17 +396,17 @@ mod tests {
     #[test]
     fn identical_monitors_are_told_apart_by_name() {
         let hash = edid(1).hash();
-        let displays = [display("1", "DP-1", "DEL 0001 #1", Some(edid(1))), display("2", "DP-2", "DEL 0001 #2", Some(edid(1)))];
-        let configs = [config("DEL 0001 #2", Some(hash.clone())), config("DEL 0001 #1", Some(hash))];
+        let displays = [display("1", "DP-1", "ACM 0001 #1", Some(edid(1))), display("2", "DP-2", "ACM 0001 #2", Some(edid(1)))];
+        let configs = [config("ACM 0001 #2", Some(hash.clone())), config("ACM 0001 #1", Some(hash))];
 
-        assert_eq!(matched_ids(&match_displays(&configs, &displays)), [("DEL 0001 #2", "2"), ("DEL 0001 #1", "1")]);
+        assert_eq!(matched_ids(&match_displays(&configs, &displays)), [("ACM 0001 #2", "2"), ("ACM 0001 #1", "1")]);
     }
 
     #[test]
     fn edid_match_wins_over_earlier_name_match() {
-        let displays = [display("1", "DP-1", "DEL 0001", Some(edid(1))), display("2", "DP-2", "DEL 0002", Some(edid(2)))];
+        let displays = [display("1", "DP-1", "ACM 0001", Some(edid(1))), display("2", "DP-2", "ACM 0002", Some(edid(2)))];
         // The name-only config comes first but must not take the display the second config's EDID identifies
-        let configs = [config("DEL 0001", None), config("external", Some(edid(1).hash()))];
+        let configs = [config("ACM 0001", None), config("external", Some(edid(1).hash()))];
 
         assert_eq!(matched_ids(&match_displays(&configs, &displays)), [("external", "1")]);
     }
@@ -414,9 +414,9 @@ mod tests {
     #[test]
     fn config_follows_its_monitor_to_another_port() {
         let configs = [config("left", Some(edid(1).hash())), config("right", Some(edid(2).hash()))];
-        let before = [display("1", "DP-1", "DEL 0001", Some(edid(1))), display("2", "DP-2", "DEL 0002", Some(edid(2)))];
+        let before = [display("1", "DP-1", "ACM 0001", Some(edid(1))), display("2", "DP-2", "ACM 0002", Some(edid(2)))];
         // The same two monitors with their cables swapped
-        let after = [display("1", "DP-1", "DEL 0002", Some(edid(2))), display("2", "DP-2", "DEL 0001", Some(edid(1)))];
+        let after = [display("1", "DP-1", "ACM 0002", Some(edid(2))), display("2", "DP-2", "ACM 0001", Some(edid(1)))];
 
         assert_eq!(matched_ids(&match_displays(&configs, &before)), [("left", "1"), ("right", "2")]);
         assert_eq!(matched_ids(&match_displays(&configs, &after)), [("left", "2"), ("right", "1")]);
@@ -442,7 +442,7 @@ mod tests {
     fn unit(product_id: u16, serial: u32) -> Edid {
         let mut data = vec![0u8; 128];
         data[0..8].copy_from_slice(&[0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]);
-        data[8..10].copy_from_slice(&[0x10, 0xAC]);
+        data[8..10].copy_from_slice(&[0x04, 0x6D]);
         data[10..12].copy_from_slice(&product_id.to_le_bytes());
         data[12..16].copy_from_slice(&serial.to_le_bytes());
         Edid::parse(&data).unwrap()
@@ -466,9 +466,9 @@ mod tests {
     fn hashed_config_ignores_another_unit_of_the_same_model() {
         let home_monitor = unit(1, 1111);
         let office_monitor = unit(1, 2222);
-        let displays = [display("1", "DP-1", "DEL 0001", Some(office_monitor))];
+        let displays = [display("1", "DP-1", "ACM 0001", Some(office_monitor))];
 
-        assert!(match_displays(&[placed("DEL 0001", &home_monitor, (0, 0))], &displays).is_empty());
+        assert!(match_displays(&[placed("ACM 0001", &home_monitor, (0, 0))], &displays).is_empty());
     }
 
     /// Profiles for a laptop used on its own, at a home dock and at an office dock
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn profile_with_both_identical_monitors_wins() {
         let hash = edid(1).hash();
-        let displays = [display("1", "DP-1", "DEL 0001 #1", Some(edid(1))), display("2", "DP-2", "DEL 0001 #2", Some(edid(1)))];
+        let displays = [display("1", "DP-1", "ACM 0001 #1", Some(edid(1))), display("2", "DP-2", "ACM 0001 #2", Some(edid(1)))];
         let profile = |name: &str, count| Profile {
             name: name.to_string(),
             description: None,

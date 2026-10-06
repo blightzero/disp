@@ -33,7 +33,7 @@
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/disp.git
+   git clone https://github.com/blightzero/disp.git
    cd disp
    ```
 
@@ -56,7 +56,7 @@
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/disp.git
+   git clone https://github.com/blightzero/disp.git
    cd disp
    ```
 

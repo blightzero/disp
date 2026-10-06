@@ -153,7 +153,7 @@ mod tests {
     fn edid(name: &str, serial: Option<&str>) -> Edid {
         let mut data = vec![0u8; 128];
         data[0..8].copy_from_slice(&[0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]);
-        data[8..10].copy_from_slice(&[0x10, 0xAC]);
+        data[8..10].copy_from_slice(&[0x04, 0x6D]);
         let mut descriptors = vec![(0xFC, name)];
         descriptors.extend(serial.map(|s| (0xFF, s)));
         for (slot, (tag, text)) in descriptors.into_iter().enumerate() {

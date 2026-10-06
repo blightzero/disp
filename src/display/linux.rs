@@ -39,7 +39,7 @@ struct CrtcPlan<'a> {
 
 impl CrtcPlan<'_> {
     /// One line describing what the display is set to, e.g.
-    /// "Contoso C27 on DP-3-3: 3840x2160 at (5120, 0), scaled 1.32999"
+    /// "Contoso C27 on DP-1: 3840x2160 at (2560, 0), scaled 1.5"
     fn summary(&self) -> String {
         let mut summary = format!(
             "{} on {}: {}x{} at ({}, {})",
