@@ -1,6 +1,6 @@
 [package]
 name = "disp"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Display Configuration Tool"]
 description = "A Linux (X11/RandR) tool to configure displays based on EDID detection"
