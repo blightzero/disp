@@ -26,12 +26,36 @@ struct CrtcPlan<'a> {
     current_crtc: randr::Crtc,
     possible_crtcs: Vec<randr::Crtc>,
     mode: randr::Mode,
+    /// Width and height of `mode`
+    mode_size: (u16, u16),
     position: (i16, i16),
     rotation: randr::Rotation,
+    orientation: Orientation,
     scaling: f64,
     primary: bool,
     /// Area covered on the screen, after rotation and scaling
     size: (u32, u32),
+}
+
+impl CrtcPlan<'_> {
+    /// One line describing what the display is set to, e.g.
+    /// "Contoso C27 on DP-3-3: 3840x2160 at (5120, 0), scaled 1.32999"
+    fn summary(&self) -> String {
+        let mut summary = format!(
+            "{} on {}: {}x{} at ({}, {})",
+            self.display.name, self.display.output, self.mode_size.0, self.mode_size.1, self.position.0, self.position.1
+        );
+        if self.orientation != Orientation::Normal {
+            summary.push_str(&format!(", rotated {}", self.orientation));
+        }
+        if self.scaling != 1.0 {
+            summary.push_str(&format!(", scaled {}", self.scaling));
+        }
+        if self.primary {
+            summary.push_str(", primary");
+        }
+        summary
+    }
 }
 
 impl LinuxDisplayManager {
@@ -135,7 +159,7 @@ impl LinuxDisplayManager {
     }
 
     fn set_screen_size(&self, width: u32, height: u32) -> Result<()> {
-        log::info!("Setting screen size to {}x{}", width, height);
+        log::debug!("Setting screen size to {}x{}", width, height);
         let mm_width = (width as f64 * self.mm_per_px.0).round() as u32;
         let mm_height = (height as f64 * self.mm_per_px.1).round() as u32;
 
@@ -388,23 +412,23 @@ impl DisplayManager for LinuxDisplayManager {
     }
     
     fn apply_config(&self, displays: &[Display], configs: &[DisplayConfig]) -> Result<()> {
-        log::info!("Applying configuration to {} displays with {} configs", displays.len(), configs.len());
+        log::debug!("Applying configuration to {} displays with {} configs", displays.len(), configs.len());
 
         let resources = self.screen_resources()?;
 
         // Create a map of display ID to config based on EDID hash or fallback to name
         let mut config_map = HashMap::new();
         for m in match_displays(configs, displays) {
-            log::info!("Config {} matches display {} on {} by {:?}", m.config.name, m.display.name, m.display.output, m.kind);
+            log::debug!("Config {} matches display {} on {} by {:?}", m.config.name, m.display.name, m.display.output, m.kind);
             config_map.insert(&m.display.id, m.config);
         }
         for config in configs {
             if !config_map.values().any(|c| std::ptr::eq(*c, config)) {
-                log::info!("Config {} matches no connected display", config.name);
+                log::debug!("Config {} matches no connected display", config.name);
             }
         }
 
-        log::info!("Matched {} displays to configurations", config_map.len());
+        log::debug!("Matched {} displays to configurations", config_map.len());
 
         // Work out the target state of every enabled display before changing anything, so
         // an invalid config is rejected while the current layout is still intact
@@ -413,17 +437,17 @@ impl DisplayManager for LinuxDisplayManager {
             let config = match config_map.get(&display.id) {
                 Some(c) => c,
                 None => {
-                    log::info!("No configuration for display {} on {}, it will be disabled", display.name, display.output);
+                    log::debug!("No configuration for display {} on {}, it will be disabled", display.name, display.output);
                     continue;
                 }
             };
 
             if !config.enabled.unwrap_or(true) {
-                log::info!("Display {} on {} is configured to be disabled", display.name, display.output);
+                log::debug!("Display {} on {} is configured to be disabled", display.name, display.output);
                 continue;
             }
 
-            log::info!("Planning display: {} on {}", display.name, display.output);
+            log::debug!("Planning display: {} on {}", display.name, display.output);
 
             // Parse output ID
             let output = display.id.parse::<u32>()
@@ -437,7 +461,7 @@ impl DisplayManager for LinuxDisplayManager {
 
             // Skip disconnected outputs
             if output_info.connection != randr::Connection::CONNECTED {
-                log::info!("  Display is no longer connected, skipping");
+                log::debug!("  Display is no longer connected, skipping");
                 continue;
             }
 
@@ -447,10 +471,10 @@ impl DisplayManager for LinuxDisplayManager {
             }
 
             // Log available modes for this display
-            log::info!("  Available modes for display {}:", display.name);
+            log::trace!("  Available modes for display {}:", display.name);
             for &mode_id in &output_info.modes {
                 if let Some(mode_info) = resources.modes.iter().find(|m| m.id == mode_id) {
-                    log::info!("    Mode {}: {}x{}", mode_id, mode_info.width, mode_info.height);
+                    log::trace!("    Mode {}: {}x{}", mode_id, mode_info.width, mode_info.height);
                 }
             }
 
@@ -466,27 +490,27 @@ impl DisplayManager for LinuxDisplayManager {
                 let height = parts[1].parse::<u32>()
                     .map_err(|_| Error::DisplayConfig(format!("Invalid height: {}", parts[1])))?;
 
-                log::info!("  Looking for mode with resolution: {}x{}", width, height);
+                log::debug!("  Looking for mode with resolution: {}x{}", width, height);
                 let mode_id = Self::find_mode(&output_info, &resources, width, height)
                     .ok_or_else(|| Error::DisplayConfig(format!("Resolution not available for display {}: {}", display.name, resolution_str)))?;
 
-                log::info!("  Found matching mode: {}", mode_id);
+                log::debug!("  Found matching mode: {}", mode_id);
                 mode_id
             } else if let Some((width, height)) = display.current_resolution {
                 // Keep current resolution
-                log::info!("  Using current resolution: {}x{}", width, height);
+                log::debug!("  Using current resolution: {}x{}", width, height);
 
                 let mode_id = Self::find_mode(&output_info, &resources, width, height)
                     .ok_or_else(|| Error::DisplayConfig("Current resolution not found in available modes".to_string()))?;
 
-                log::info!("  Found matching mode for current resolution: {}", mode_id);
+                log::debug!("  Found matching mode for current resolution: {}", mode_id);
                 mode_id
             } else {
                 // Use first available mode
                 let mode_id = *output_info.modes.first()
                     .ok_or_else(|| Error::DisplayConfig("No modes available".to_string()))?;
 
-                log::info!("  Using first available mode: {}", mode_id);
+                log::debug!("  Using first available mode: {}", mode_id);
                 mode_id
             };
 
@@ -501,17 +525,12 @@ impl DisplayManager for LinuxDisplayManager {
             };
 
             // Parse orientation
-            let rotation = match config.orientation.as_deref().map(Orientation::from) {
-                Some(Orientation::Normal) => randr::Rotation::ROTATE0,
-                Some(Orientation::Right) => randr::Rotation::ROTATE90,
-                Some(Orientation::Inverted) => randr::Rotation::ROTATE180,
-                Some(Orientation::Left) => randr::Rotation::ROTATE270,
-                None => match display.orientation {
-                    Orientation::Normal => randr::Rotation::ROTATE0,
-                    Orientation::Right => randr::Rotation::ROTATE90,
-                    Orientation::Inverted => randr::Rotation::ROTATE180,
-                    Orientation::Left => randr::Rotation::ROTATE270,
-                },
+            let orientation = config.orientation.as_deref().map(Orientation::from).unwrap_or(display.orientation);
+            let rotation = match orientation {
+                Orientation::Normal => randr::Rotation::ROTATE0,
+                Orientation::Right => randr::Rotation::ROTATE90,
+                Orientation::Inverted => randr::Rotation::ROTATE180,
+                Orientation::Left => randr::Rotation::ROTATE270,
             };
 
             // Parse scaling
@@ -540,8 +559,10 @@ impl DisplayManager for LinuxDisplayManager {
                 current_crtc: output_info.crtc,
                 possible_crtcs: output_info.crtcs,
                 mode,
+                mode_size: (mode_info.width, mode_info.height),
                 position,
                 rotation,
+                orientation,
                 scaling,
                 primary: config.primary.unwrap_or(false),
                 size,
@@ -590,7 +611,7 @@ impl DisplayManager for LinuxDisplayManager {
             )));
         }
         let screen_size = (screen_size.0.max(range.min_width as u32), screen_size.1.max(range.min_height as u32));
-        log::info!("Layout needs a screen size of {}x{}", screen_size.0, screen_size.1);
+        log::debug!("Layout needs a screen size of {}x{}", screen_size.0, screen_size.1);
 
         // Track errors but don't fail immediately
         let mut errors = Vec::new();
@@ -598,7 +619,7 @@ impl DisplayManager for LinuxDisplayManager {
         // Turn off every active CRTC the new layout doesn't use: unmatched displays,
         // displays configured to be disabled, and CRTCs left on for disconnected outputs.
         // Doing this first frees up CRTCs and screen space for the new layout.
-        log::info!("Disabling displays that are not part of the new layout");
+        log::debug!("Disabling displays that are not part of the new layout");
         for &crtc in &resources.crtcs {
             if plans.iter().any(|p| p.crtc == crtc) {
                 continue;
@@ -618,7 +639,7 @@ impl DisplayManager for LinuxDisplayManager {
                 .collect();
             let target = if names.is_empty() { format!("CRTC {}", crtc) } else { names.join(", ") };
 
-            log::info!("  Disabling {}", target);
+            log::info!("{}: off", target);
             if let Err(e) = self.set_crtc(crtc, resources.config_timestamp, (0, 0), 0, randr::Rotation::ROTATE0, &[]) {
                 let err = format!("Failed to disable {}: {}", target, e);
                 log::error!("  {}", err);
@@ -636,10 +657,8 @@ impl DisplayManager for LinuxDisplayManager {
 
         for plan in &plans {
             let display = plan.display;
-            log::info!("Enabling display {} on {} with:", display.name, display.output);
-            log::info!("    Position: ({}, {})", plan.position.0, plan.position.1);
-            log::info!("    Mode: {}", plan.mode);
-            log::info!("    Rotation: {:?}", plan.rotation);
+            log::debug!("Enabling display {} on {} with mode {} at ({}, {}), rotation {:?}",
+                display.name, display.output, plan.mode, plan.position.0, plan.position.1, plan.rotation);
 
             // Set the scaling transform. This must come before SetCrtcConfig: the server only
             // stores the transform as pending and applies it with the next CRTC configuration.
@@ -673,7 +692,7 @@ impl DisplayManager for LinuxDisplayManager {
                 .is_some_and(|t| t.current_transform != transform || t.pending_transform != transform);
 
             if needs_transform {
-                log::info!("  Setting transform for scaling factor {} with the {} filter", plan.scaling, filter_name);
+                log::debug!("  Setting transform for scaling factor {} with the {} filter", plan.scaling, filter_name);
 
                 match self.conn.randr_set_crtc_transform(
                     plan.crtc,
@@ -683,7 +702,7 @@ impl DisplayManager for LinuxDisplayManager {
                 ) {
                     Ok(cookie) => {
                         match cookie.check() {
-                            Ok(_) => log::info!("  Transform set successfully"),
+                            Ok(_) => log::debug!("  Transform set successfully"),
                             Err(e) => {
                                 let err = format!("Failed to apply transform for display {}: {}", display.name, e);
                                 log::error!("  {}", err);
@@ -705,17 +724,18 @@ impl DisplayManager for LinuxDisplayManager {
                 errors.push(err);
                 continue;
             }
-            log::info!("  CRTC configuration successful");
+            log::debug!("  CRTC configuration successful");
+            log::info!("{}", plan.summary());
 
             // Set primary if requested
             if plan.primary {
-                log::info!("  Setting as primary display");
+                log::debug!("  Setting as primary display");
 
                 let result = self.conn.randr_set_output_primary(self.root, plan.output)
                     .map_err(|e| e.to_string())
                     .and_then(|cookie| cookie.check().map_err(|e| e.to_string()));
                 match result {
-                    Ok(_) => log::info!("  Set primary successful"),
+                    Ok(_) => log::debug!("  Set primary successful"),
                     Err(e) => {
                         let err = format!("Failed to set primary output for display {}: {}", display.name, e);
                         log::error!("  {}", err);

@@ -98,9 +98,19 @@ pub fn run() -> Result<()> {
         _ => log::LevelFilter::Trace,
     };
     
+    // What disp did is shown as plain lines under the command's own output; details at
+    // higher verbosity, warnings and errors are marked with their level. Other crates
+    // only report warnings and errors.
     env_logger::Builder::new()
-        .filter_level(log_level)
-        .format_timestamp(None)
+        .filter_level(log::LevelFilter::Warn)
+        .filter_module("disp", log_level)
+        .format(|buf, record| {
+            use std::io::Write;
+            match record.level() {
+                log::Level::Info => writeln!(buf, "  {}", record.args()),
+                level => writeln!(buf, "{}: {}", level, record.args()),
+            }
+        })
         .init();
     
     match &cli.command {
@@ -392,9 +402,8 @@ pub fn run() -> Result<()> {
                                         attempts = 0;
                                         gave_up = false;
                                     } else if attempts < MAX_ATTEMPTS {
-                                        if !new_displays {
-                                            println!("Layout no longer matches profile {}: {}", profile.name, differences.join("; "));
-                                        }
+                                        let reason = if new_displays { "Layout differs from" } else { "Layout no longer matches" };
+                                        println!("{} profile {}: {}", reason, profile.name, differences.join("; "));
                                         println!("Applying profile: {}", profile.name);
                                         if let Err(e) = apply_profile(&display_manager, &displays, profile) {
                                             eprintln!("Error applying configuration: {}", e);
